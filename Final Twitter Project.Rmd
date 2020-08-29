@@ -1,0 +1,518 @@
+---
+title: "Final Twitter Project"
+author: "Nadav Levanoni"
+date: "8/26/2020"
+output:
+  rmdformats::readthedown:
+    lightbox: true
+    gallery: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(twitteR)
+library(tidyverse)
+library(tidytext)
+library(lubridate)
+library(purrr)
+library(here)
+library(corpus)
+library(qdap)
+library(neuralnet)
+library(quantmod)
+library(modelr)
+```
+
+
+# My Goal
+
+The goal of this project is to first train a sentiment analysis model that can decipher whether a tweet has a positive or negative sentiment. Then, using the model, I want to create a linear model between a company's mean twittter sentiment per day (a score between 0 and 1) and their closing stock price minus their opening stock price for the day.
+
+
+# Retrieving The Data
+
+Going in to this project I had the misconception that with my newfound twitter API developer account I would be able to scrape copious amounts of historic tweets; unfortunatley Twitter only allows users to collect limited tweets within the past 7 days. My solution was to scrape tweets regarding variety of companies, the hashtags I scraped were the following: TSLA, Disney, AMZN, Airlines, Google, and MSFT.
+<br>
+
+```{r, include=FALSE}
+# I'm apparently not supposed to share these, but oh well lol
+
+consumer_key <- "MmEM7Dv2MRVYJvpIZBsdJG9Pv"
+consumer_secret <- "5lkFNFU8J6diUlyZxxjgxKD8RNGtRpBemIJtGLtittILzeM67j"
+access_token <- "747887898586931200-93EfpApfGLT8tXkQEUmHB4vTbcykcxB"
+access_secret <- "MhJ6KMX9EMk9mTPAsNrYZKJPPHE772jGbADyIRreqQicd"
+
+
+setup_twitter_oauth(consumer_key, consumer_secret, access_token, access_secret)
+```
+
+I used the TwitteR library, specifically its searchTwitter() function, to help ease the process of retreiving tweets. I quickly found out that I could only query one cohort of tweets (hashtag and date) per execution of its searchTwitter. To resolve this issue I created two vertecies one containing dates using the lubridate library, and another containing my desired hashtags, then used pmap to iterate through the vertecies to get every permutation of requests I needed. From there I simply combined every returned data frame in to one large dataframe that contained all of the tweets for every day for every company. <insert head of the combined data frame>
+<br>
+
+
+```{r, message = FALSE, , include=FALSE}
+day_of_tweets <- function(Date, Next_Date, term){
+  Date = as.character(Date)
+  Next_Date = as.character(Next_Date)
+  tweets <- searchTwitter(term ,n=100,lang="en", since = Date, until = Next_Date)%>%
+    strip_retweets()
+  
+  tweets_df <- twListToDF(tweets) # Convert to data frame
+
+  tweet_words <- tweets_df %>% 
+    select(id, text, created)
+  
+  return(tweet_words)
+}
+
+remove_extras <- function(string){
+  remove_URLS = gsub(" ?(f|ht)tp(s?)://(.*)[.][a-z]+", "", string)
+  remove_hashtags = gsub("#([A-z]|[0-9])*[ |,]", "", remove_URLS)
+  remove_hashtags = gsub("#([A-z]|[0-9]|[/])*$", "", remove_hashtags)
+  return(remove_hashtags)
+}
+
+p1 <- rep(seq(as.Date("2020-08-22"), to = as.Date("2020-08-27"), by =  "days"), 4) # USE RECENT DATES OR WILL NOT WORK!
+p2 <-  p1 + days(1)
+comps <- c(rep("#TSLA", 6), rep("#Disney", 6), rep("#AMZN", 6), rep("#Airlines", 6))
+
+raw_dfs <- pmap(data.frame(p1, p2, comps), ~day_of_tweets(..1, ..2, ..3))
+
+df <- do.call("rbind", raw_dfs) %>%
+  mutate(text = remove_extras(text))
+
+write.csv(df, paste(here::here("Data"), "example.csv"))
+```
+
+Note:
+I quickly realized that my initial data scrape of tweets wouldnt provide me with enough data for a good neural network because many of the Tweets gathered ended up being irrelevant ads, so I went through the data collection process two more times and collected tweets for both Google and MSFT using the same method.
+
+
+Once I saved the csvs localy I had to manually rank each tweet either 0, 1, or 2 which correspond to negative, positive, and irrelevant/advertisement/etc, An example of a negative tweet is: *"Tesla is the most dangerous stock for 2020"*, a positive one: *"NOTHING BUT A SMIL ON MY FACE <U+0001F601><U+0001F601><U+0001F601><U+0001F601><U+0001F601><U+0001F601><U+0001F601> @elonmusk @Tesla @teslacn @vincent13031925 Is it to early to celebrate the great news!"*, note <U+0001F601> is the grinning similing emoji, and an irrelevant/ad one: *"EURNZD TP2 Hit! 180 PIPS PROFIT <U+0001F525><U+0001F44D><U+0001F3FB><U+26A1><U+FE0F> For Forex signals, join/4H0dzFO5Pz"*.
+
+
+# Cleaning & Formatting the Data
+
+Once I finished manually entering in sentiments I had to read the tweets back into RStudio
+
+```{r, include=FALSE}
+google <- read.csv("Data google.csv") %>%
+  mutate(type = "learning")
+msft <- read.csv("Data msft.csv") %>%
+  mutate(type = "testing")
+data <- read.csv("others.csv") %>%
+  mutate(type = "learning")
+
+tweet_data <- rbind(google, msft, data)
+```
+
+
+The first thing I did was remove all of the irrelevant tweets.
+
+```{r, include=FALSE}
+tweet_data <- tweet_data %>%
+  filter(sentiment != 2)
+```
+
+Removing URLS:
+The first thing I noticed is many tweets have URLS, so my first incentive was to remove them because they wont benefit the sentiment analysis in any way. Next I wanted to remove hashtags, because while they can contribute to a tweet, they can also have very irrelevant information (using popular hashtags for attention, tagging other companies, etc.), and I didnt want the bias of a succesful companies name to influence the model.
+<br>
+
+```{r, include=FALSE}
+# I actually did this when gathering the tweets. The method remove_extras()
+```
+
+
+
+
+*Bag of Words*: We want to vectorize our data in a weighted bag of words format to feed our neural network. What this means is every word that appears in our collected tweets will be given a corresponding unique number starting at 1 and increasing in increments of 1 per unique word. Then each tweet gets its own vector of length n, where n is the number of unique words, and each index of the vector corresponds with a unique word, and the value stored in the index is the frequency of the word in said tweet. To help clear things up I made an image to demonstrate this concept, the "dictionary" shows the translation from unique word to number.
+
+<center>
+![Bag Of Words Model Example](BOW example.jpg)
+</center>
+
+*Note!* In this example the model can't differentiate between "The" and "the", and "walk" and "walking".
+These are specific issues that we will address, explain why they're bad, and solve in our model.
+
+<br>
+Step 1: Minor Cleanup:
+After removing URLS I had to do some minor cleaning to remove irrelevant left over characters, such as angle brackets, ellipses, backslashes, etc., that got introduced when I initially read the data from twitter.
+
+
+<br>
+Step 2: Removing Stopwords:
+
+Many non-data scientists do not know what stopwords are. Google's definition is "Stopwords are the English words which does not add much meaning to a sentence."; in context of this project we do not want stopwords because we do not want meaningless filler words to influence our sentiment analysis, we only want meaningful contributing words (, punctuation, and emojis). We use qdap's library to remove stopwords with its rm_stopwords() function.
+
+
+```{r, include=FALSE}
+remove_blank <- function(entree){
+  entree <-  unlist(entree)
+  return(entree[entree != ""])
+}
+
+
+tweet_data <- tweet_data %>%
+  mutate(text = rm_stopwords(text))
+
+rm_garb <- map(tweet_data$text, ~str_replace_all(.x, "/", ""))
+rm_garb <- map(rm_garb, ~str_replace_all(.x, "…", ""))
+rm_garb <- map(rm_garb, ~str_replace_all(.x, "<", ""))
+rm_garb <- map(rm_garb, ~str_replace_all(.x, ">", ""))
+rm_garb <- map(rm_garb, ~str_replace_all(.x, "#", ""))
+rm_garb <- map(rm_garb, ~remove_blank(.x))
+
+tweet_data <- tweet_data %>%
+  mutate(text = rm_garb)
+```
+
+
+Some examples of English stopwords are:
+
+"and", "a", "the", "or", etc.
+
+An example of a tweet before and after stopwords:
+<br>
+before: "Tesla is the most dangerous stock for 2020"
+<br>
+after: "Tesla most dangerous stock 2020"
+
+
+<br>
+Step 3: Stemming the Data + Capitalization:
+
+Stemming is essential for the bag of words model because as we saw in the prior example, as of now our model will not be able to distinguish words such as "walking" and "walk" from eachother even though they have the same root meaning. Additionally we need to take Care of capitalizations because we want the model to treat words such as "Cat" and "cat" the same. Fortunatley the corpus library lets us do both of these actions with its text_tokens() function.
+diagram and example
+
+
+```{r, include= FALSE}
+tweet_data$text <- map(tweet_data$text, ~text_tokens(.x , stemmer = "en"))
+
+unlisted_text <- map(tweet_data$text, ~unlist(.x))
+
+tweet_data <- tweet_data %>%
+  mutate(text = unlisted_text)
+```
+
+
+Step 4: Creating the dictionary and vectorizing:
+
+Now we created a dictionary comprised of the remaining words/ word segments and translate our sentences into numbered sentences. We then Take our numbered sentences and convert them into wieghted lists of the same length of the dictionary, where each words unique number correlates to ints index in the list. (See [image](BOW example.jpg) for clarification).
+
+Once I tried building my neural network I realized by bag of words model wasnt compatible with the neuralnet library, so I quickly tweeked the lists into a dataframe where every index position got translated into its own column.
+
+
+```{r, include=FALSE}
+words_dict <- unique(data.frame(cbind(unlist(tweet_data$text))))
+
+words_dict$index <- 1:dim(words_dict)[1]
+
+colnames(words_dict) <- c("word", "index")
+
+rownames(words_dict) <- words_dict$word
+
+words_dict <- words_dict %>%
+  select(index)
+
+
+convert_num <- function(word, dict){
+  return(dict[word, ])
+}
+
+
+all_tweets <- c()
+
+for(i in tweet_data$text){
+  tweet <- map(as.data.frame(i)$i, ~convert_num(.x, words_dict))
+  all_tweets <- c(all_tweets,list(tweet))
+}
+
+tweet_data$bow <- all_tweets
+
+
+tweet_data <- tweet_data %>%
+  mutate(vec = list(rep(0, dim(words_dict)[1])))
+
+for(i in 1:dim(tweet_data)[1]){
+  for(j in tweet_data[i, ]$bow){
+    for(k in j){
+      tweet_data[i, ]$vec[[1]][k] = tweet_data[i, ]$vec[[1]][k] + 1
+    }
+  } 
+}
+
+
+vec_matrix <- as.data.frame(do.call(rbind, tweet_data$vec))
+
+vec_matrix <- cbind(tweet_data$type, tweet_data$sentiment,  tweet_data$created, vec_matrix)
+```
+
+
+
+
+# Building the neural network
+
+
+My goal was to train my neural network to predict the stock prices of Microsoft (MSFT), so I had to seperate microsoft tweets from the rest of the training tweets.I then added some randomly selected MSFT tweets into the training data, so it would be familiar with Microsoft lingo, and I had to make sure that any microsoft training data stayed out of the testing data because its bad practice, skews results in positive accuracy, to mix training data into testing data.
+
+
+
+```{r, include=FALSE}
+training <- vec_matrix%>%
+  filter(tweet_data$type == "learning")
+
+colnames(training)[2] <- "sentiment"
+
+MSFT <- vec_matrix%>%
+  filter(tweet_data$type == "testing")
+
+# now feeding splitting off some random MSFT tweets for training
+
+set.seed(9)
+rows <- sample(nrow(MSFT))
+rand_vec_matrix <- MSFT[rows, ]
+
+testing <- rand_vec_matrix[1:60, ]
+
+colnames(testing)[2] <- "sentiment"
+
+training_2 <- rand_vec_matrix[61:dim(rand_vec_matrix)[1], ]
+
+colnames(training_2)[2] <- "sentiment"
+
+training <- rbind(training, training_2)
+```
+
+
+Credit to this persons [broken code](https://stackoverflow.com/questions/45320125/r-neural-network-error-in-neuronsi-weightsi-requires-numeric-comp) which largely assisted me with parsining the required equation for the neural network.
+
+
+```{r, include=FALSE}
+names <- colnames(training[-c(1,2,3)])
+
+fmla <- as.formula(paste("sentiment ~ ", paste(names, collapse= "+")))
+```
+
+
+Once I had the data split up I first fed the training data to the model. I used the neuralnet library. I decided to build the neural network out of 4 layers. 2 layers contain 16 nodes and 2 the other 2 have 8 nodes. In hindsight this may be a bit excessive and 3 layers would be sufficient, but the change wouldn't be substaintial to the results. The neuralnet libarary also allows to plot the network which is shown below.
+
+
+```{r, include=FALSE}
+nn <-  neuralnet(fmla, data = training, hidden=c(16, 16, 8, 8),act.fct = "logistic",
+                linear.output = FALSE)
+```
+
+
+```{r, include = FALSE}
+# For some reason this isnt Rmd Friendly, so I'll paste an image of the neural network
+plot(nn)
+```
+
+
+![Trained Neural Network](network.JPG)
+
+
+I wanted to use a ReLu activation, but unfortunatley it isnt supported yet by neuralnet. Ideally I would use a ReLu activation because it has a strong influence to pull weights to extremes (0 or 1) which is what we want because we want certainty on whether a tweet is negative-0 or positive-1. 
+
+<br>
+
+I decided to use the next best thing availible which is a Sigmoid activation. It is similar to relu, but a smooth curve that emphasizes extremeties. It fulfills the same role, but in a more mild fashion than relu. In the neuralnet library you can use the sigmoid activation by entering the parameter "logistic" for your activation. THe ReLu and sigmoid equations and diagrams can be found below.
+
+![credit: https://towardsdatascience.com/activation-functions-neural-networks-1cbd9f8d91d6](relu.png)
+
+
+# Testing and Results
+
+ 
+Once I got my prediction values I assigned them their appropriate category, positive or negative. Then, I found the accuracy of the model by calculating the proportion of correctly assigned sentiments; after running a couple of models it seems like the accuracy is between 76 and 83%, depending on random factors.
+
+Heres the accuracy of the random execution I'm using for the report:
+
+```{r, echo = FALSE}
+Predict = compute(nn, testing)
+
+prob <- Predict$net.result
+pred <- ifelse(prob>0.5, 1, 0)
+
+sum(testing$sentiment == pred)/length(pred)
+```
+
+
+
+After assesing the accuracy I decided that it was high enough to continue my analysis.
+
+First I wanted to create a linear model between the predicted sentiment per tweet and closing minus opening prices of Microsoft stock.
+
+
+```{r, include = FALSE, message=FALSE}
+getSymbols("MSFT", from = "2020-08-12", to = "2020-08-19")
+
+MSFT <- as.data.frame(MSFT)
+
+MSFT <- MSFT %>%
+  mutate(diff = MSFT.Close - MSFT.Open)
+
+MSFT$created = c(as.Date("2020-08-12"), as.Date("2020-08-13"), as.Date("2020-08-14"), as.Date("2020-08-17"), as.Date("2020-08-18"))
+  
+MSFT <- MSFT %>% select(created, diff)
+
+testing2 <- testing
+
+testing2$prob <- prob
+
+colnames(testing2)[3] <- "created"
+
+testing2$created <- as.character(as_date(mdy_hm(testing2$created)))
+
+testing2$created <- str_replace_all(testing2$created, "2020\\-08\\-15", "2020-08-17")
+testing2$created <- str_replace_all(testing2$created, "2020\\-08\\-16", "2020-08-17")
+
+testing2 <- testing2 %>%
+  mutate(created = as_date(created))%>%
+  select(created, prob)
+
+testing2 <- left_join(testing2, MSFT)
+```
+
+
+The following is a box plot of each days scores in relation to the closing minus opening price 
+
+
+```{r, echo=FALSE}
+ggplot(data = testing2, mapping = aes(x = prob, y = diff))+
+  geom_boxplot(aes(color = as.character(created)))+
+  xlab("Sentiment Score")+
+  ylab("Closing minus Opening Price (USD)")+
+  ggtitle("Sentiment Score vs. Closing minus Opening Price (USD)")+
+  scale_color_discrete(name = "Day of Week", labels = c("Wednesday", "Thursday", "Friday", "Weekend + Monday", "Tuesday"))
+```
+
+Additionally here is a linear model of the data, however the discrete closing prices (due to not enough data) detract from the plot.
+
+
+```{r, echo = FALSE}
+ggplot(data = testing2, mapping = aes(x = prob, y = diff))+
+  geom_point(aes(color = as.character(created)))+
+  geom_smooth(method = "lm", formula = y ~ x,  se = FALSE)+
+  xlab("Sentiment Score")+
+  ylab("Closing minus Opening Price (USD)")+
+  ggtitle("Sentiment Score vs. Closing minus Opening Price (USD)")+
+  scale_color_discrete(name = "Day of Week", labels = c("Wednesday", "Thursday", "Friday", "Weekend + Monday", "Tuesday"))
+```
+
+
+The linear model appears to have a positive slope, it also has a p-value of approximatley 0.03 which is below the significance threshold of 0.05, so we can conclude that the linear model is significant, and that we did not get the outcome (linear relationship) we got by random chance.
+
+
+
+```{r, include = FALSE}
+linear_model <- testing2 %>%
+  lm(diff ~ prob, data = .)
+summary(linear_model)
+```
+
+
+
+I now wanted to construct a linear regression between the mean predicted sentiment per day and closing minus opening prices of Microsoft stock.
+
+I grouped the raw predictions, values between 0 and 1, from the sentiment analysis by date and took their means. I then decided to replace Monday's mean value with the mean of Saturday, Sunday, and Monday's mean sentiment values because the stock market is closed on weekends and I didnt want to leave out any new sentiment progressions that formed over the weekend, and it seemed msot appropriate to group them with Monday. I gathered the stock information from Yahoo Finance using the quantmod library.
+
+
+```{r, message = FALSE, include=FALSE}
+testing$prob <- prob
+
+colnames(testing)[3] <- "created"
+
+testing$created <- as_date(mdy_hm(testing$created))
+
+testing <- testing %>%
+  group_by(created)%>%
+  summarize(score = mean(prob))%>%
+  mutate(dow = weekdays(created))
+
+monday <- testing %>%
+  filter(dow == "Monday" |dow == "Saturday" | dow == "Sunday" )
+
+testing[6, ]$score <- mean(monday$score)
+
+testing <- testing %>%
+  filter(dow != "Saturday" & dow != "Sunday")
+
+
+```
+
+
+The linear model appears to have a positive slope, but unfortunatley it only have a p-value of approximatley 0.20 which isnt below the significance threshold of 0.05, so I cannot make any conclusions. Heres a look at the data frame and plot:
+
+```{r, echo=FALSE, message = FALSE, warning=FALSE}
+getSymbols("MSFT", from = "2020-08-12", to = "2020-08-19")
+
+MSFT <- as.data.frame(MSFT)
+
+MSFT <- MSFT %>%
+  mutate(diff = MSFT.Close - MSFT.Open)
+
+
+linear_model_df <- data.frame(cbind(as.character(testing$created), testing$score, MSFT$diff))
+
+linear_model_df <- linear_model_df %>%
+  mutate(X2 = as.numeric(X2)) %>%
+  mutate(X3 = as.numeric(X3))
+
+colnames(linear_model_df) <- c("Date", "Score", "Diff")
+
+linear_model_df
+
+```
+
+
+```{r, echo = FALSE}
+ggplot(data = linear_model_df, mapping = aes(x = Score, y = Diff))+
+  geom_point(aes(color = Date))+
+  geom_smooth(method = "lm", formula = y ~ x,  se = FALSE)+
+  xlab("Mean Daily Sentiment Score")+
+  ylab("Closing minus Opening Price (USD)")+
+  ggtitle("Mean Daily Sentiment Score vs. Closing minus Opening Price (USD)")+
+  scale_color_discrete(name = "Day of Week", labels = c("Wednesday", "Thursday", "Friday", "Weekend + Monday", "Tuesday"))
+```
+
+
+```{r, include= FALSE}
+linear_model <- linear_model_df %>%
+  lm(Diff ~ Score, data = .)
+summary(linear_model)
+```
+
+
+# Conclusion
+The overall project was a success. I was able to construct a sentiment analysis for tweets which in turn has a significant linear relationship betweem the corresponding stocks closing minus opening prices for the day.
+The sentiment analysis had an accuracy of roughly 76% and the linear model between all predictions and closing minus opening prices was found to have a signiificant p-value of roughly 0.03.
+
+# Reflection
+
+Unfortunatley I faced a very burdensome barrier of not being able to scrape as many tweets as I'd like. I have the code/ infrastructure to scale up the model if I get the resouces to scrape more tweets. Some other draw backs of my model are its susceptible to biases; I manually categorized thousands of tweets over several days and my mood wasnt constant, so its possible that some companies or topics has biases for/against them. I also have personal biases that also may play a role in my sentiment identification.
+
+On the bright side, it seems like the sentiment analysis worked pretty well with an accuracy well above 50%. Additionally the linear model has a very promising significant level of 0.03. It would be interesting to see more results if this project gets the opportunity to be scaled up.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
