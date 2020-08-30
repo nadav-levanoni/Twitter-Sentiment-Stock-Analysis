@@ -35,7 +35,7 @@ Going in to this project I had the misconception that with my newfound twitter A
 <br>
 
 ```{r, include=FALSE}
-# I'm apparently not supposed to share these, but oh well lol
+# You need your own keys to run the code.
 
 consumer_key <- "private code"
 consumer_secret <- "private code"
