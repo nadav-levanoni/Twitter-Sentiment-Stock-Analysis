@@ -37,10 +37,10 @@ Going in to this project I had the misconception that with my newfound twitter A
 ```{r, include=FALSE}
 # I'm apparently not supposed to share these, but oh well lol
 
-consumer_key <- "MmEM7Dv2MRVYJvpIZBsdJG9Pv"
-consumer_secret <- "5lkFNFU8J6diUlyZxxjgxKD8RNGtRpBemIJtGLtittILzeM67j"
-access_token <- "747887898586931200-93EfpApfGLT8tXkQEUmHB4vTbcykcxB"
-access_secret <- "MhJ6KMX9EMk9mTPAsNrYZKJPPHE772jGbADyIRreqQicd"
+consumer_key <- "private code"
+consumer_secret <- "private code"
+access_token <- "private code"
+access_secret <- "private code"
 
 
 setup_twitter_oauth(consumer_key, consumer_secret, access_token, access_secret)
