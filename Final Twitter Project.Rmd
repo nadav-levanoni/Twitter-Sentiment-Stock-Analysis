@@ -1,5 +1,5 @@
 ---
-title: "Final Twitter Project"
+title: "Twitter Project"
 author: "Nadav Levanoni"
 date: "8/26/2020"
 output:
